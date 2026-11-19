@@ -1,0 +1,16 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+data/*.parquet
+!data/sample_1000_events.csv
+!data/data_manifest.json
+
+raw_parquet/
+raw_tmp/
+checkpoints/
+spark-warehouse/
+logs/
+derby.log
+metastore_db/
