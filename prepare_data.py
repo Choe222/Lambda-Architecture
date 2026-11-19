@@ -32,7 +32,7 @@ def main():
     file_sha256 = compute_sha256(RAW_FILE)
     
     df_raw = pd.read_parquet(RAW_FILE, columns=[
-        "tpep_pickup_datetime", "PULocationID", "payment_type", "total_amount", "trip_distance"
+        "tpep_pickup_datetime", "PULocationID", "total_amount", "trip_distance"
     ])
     total_input_rows = len(df_raw)
     

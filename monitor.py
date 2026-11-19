@@ -141,7 +141,7 @@ def main():
     parser.add_argument("--warmup", type=int, default=20, help="Initial warm-up duration (seconds)")
     parser.add_argument("--poll-interval", type=float, default=0.25, help="Polling cycle to measure freshness (seconds)")
     parser.add_argument("--sample-target", type=int, default=80, help="Target sample events (>= 50)")
-    parser.add_argument("--out-dir", default="metrics")
+    parser.add_argument("--out-dir", default="metrics/runs")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)

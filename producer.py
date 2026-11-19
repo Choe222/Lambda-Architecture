@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import argparse
@@ -39,7 +40,7 @@ def main():
     parser.add_argument("--gt-out", default="logs/produced_ground_truth.jsonl")
     args = parser.parse_args()
 
-    os.makedirs(os.path.dirname(args.gt_out), exist_ok=True)
+    os.makedirs(os.path.dirname(args.gt_out) or ".", exist_ok=True)
     ensure_single_partition_topic(args.bootstrap_servers, args.topic)
 
     df = pd.read_parquet(args.input).sort_values("seq").reset_index(drop=True)
@@ -99,10 +100,12 @@ def main():
 
     producer.flush()
     producer.close()
-    with open(f"{args.gt_out}.done", "w", encoding="utf-8") as done_f:
-        done_f.write(str(sent_count))
     total_time = time.monotonic() - start_time
     print(f"[Producer] Finished in {total_time:.2f}s | Sent: {sent_count} | Errors: {error_count}")
+    if error_count > 0:
+        sys.exit(1)
+    with open(f"{args.gt_out}.done", "w", encoding="utf-8") as done_f:
+        done_f.write(str(sent_count))
 
 if __name__ == "__main__":
     main()

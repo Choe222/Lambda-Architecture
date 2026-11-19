@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import time
 import signal
 import argparse
@@ -135,11 +136,10 @@ def main():
     parser.add_argument("--cores", type=int, default=2)
     parser.add_argument("--memory", default="1g")
     parser.add_argument("--opt", action="store_true", help="Enable Spark configuration optimizations for E4")
-    parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--metrics-out", default="logs/batch_metrics.csv")
     args = parser.parse_args()
 
-    os.makedirs(os.path.dirname(args.metrics_out), exist_ok=True)
+    os.makedirs(os.path.dirname(args.metrics_out) or ".", exist_ok=True)
     if not os.path.exists(args.metrics_out):
         with open(args.metrics_out, "w", encoding="utf-8") as f:
             f.write("timestamp_utc,prev_h,new_h,num_parquet_files,batch_duration_ms\n")
@@ -157,11 +157,6 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
 
     last_h = 0
-    if args.once:
-        run_single_batch(spark, args.raw_dir, args.pg_conn, last_h, args.metrics_out)
-        spark.stop()
-        return
-
     print(f"[BatchJob] Daemon started: interval={args.interval}s, cores={args.cores}, mem={args.memory}, opt={args.opt}")
     next_run = time.monotonic() + args.interval
 
@@ -175,12 +170,16 @@ def main():
             next_run = time.monotonic() + args.interval
         time.sleep(0.5)
 
+    final_ok = True
     try:
         run_single_batch(spark, args.raw_dir, args.pg_conn, last_h, args.metrics_out)
-    except Exception:
-        pass
+    except Exception as e:
+        final_ok = False
+        print(f"[BatchJob] Final flush failed: {e}")
 
     spark.stop()
+    if not final_ok:
+        sys.exit(1)
     print("[BatchJob] Stopped cleanly.")
 
 if __name__ == "__main__":

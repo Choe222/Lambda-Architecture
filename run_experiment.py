@@ -16,7 +16,7 @@ def reset_environment(exp_id, bootstrap_servers="localhost:9092", topic="events"
         os.makedirs(d, exist_ok=True)
 
     for suffix in ("batch_cost.csv", "speed_cost.csv"):
-        stale = os.path.join("metrics", f"{exp_id}_{suffix}")
+        stale = os.path.join("metrics", "runs", f"{exp_id}_{suffix}")
         if os.path.exists(stale):
             os.remove(stale)
 
@@ -47,12 +47,12 @@ def reset_environment(exp_id, bootstrap_servers="localhost:9092", topic="events"
         )
     time.sleep(1.0)
 
-def terminate_proc(proc, name):
+def terminate_proc(proc, name, timeout=15):
     if proc and proc.poll() is None:
         print(f"[Runner] Stopping {name} (PID={proc.pid})...")
         proc.send_signal(signal.SIGTERM)
         try:
-            proc.wait(timeout=15)
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
 
@@ -81,7 +81,7 @@ def main():
             "--interval", str(args.batch_interval),
             "--cores", str(args.cores),
             "--memory", args.memory,
-            "--metrics-out", f"metrics/{args.exp_id}_batch_cost.csv"
+            "--metrics-out", f"metrics/runs/{args.exp_id}_batch_cost.csv"
         ]
         if args.opt:
             batch_cmd.append("--opt")
@@ -92,7 +92,7 @@ def main():
                 py_exec, "speed_job.py",
                 "--cores", str(args.cores),
                 "--memory", args.memory,
-                "--metrics-out", f"metrics/{args.exp_id}_speed_cost.csv"
+                "--metrics-out", f"metrics/runs/{args.exp_id}_speed_cost.csv"
             ]
             if args.opt:
                 speed_cmd.append("--opt")
@@ -106,7 +106,8 @@ def main():
             py_exec, "monitor.py",
             "--exp-id", args.exp_id,
             "--duration", str(args.duration),
-            "--drain-timeout", "35"
+            "--drain-timeout", "70",
+            "--out-dir", "metrics/runs"
         ])
 
         procs["producer"] = subprocess.Popen([
@@ -117,12 +118,24 @@ def main():
         ])
 
         procs["producer"].wait()
+        if procs["producer"].returncode != 0:
+            raise RuntimeError(f"Producer failed with exit code {procs['producer'].returncode}")
+
+        for dep in ("raw", "speed"):
+            p = procs.get(dep)
+            if p and p.poll() is not None and p.returncode != 0:
+                raise RuntimeError(f"{dep} exited unexpectedly with code {p.returncode}")
+
         print("[Runner] Producer finished. Waiting 4s for RawConsumer to flush final Parquet...")
         time.sleep(4)
 
-        terminate_proc(procs.get("batch"), "batch")
+        terminate_proc(procs.get("batch"), "batch", timeout=60)
+        if procs["batch"].returncode not in (0, None):
+            raise RuntimeError(f"BatchJob failed during shutdown with exit code {procs['batch'].returncode}")
 
-        procs["monitor"].wait(timeout=45)
+        procs["monitor"].wait(timeout=80)
+        if procs["monitor"].returncode != 0:
+            raise RuntimeError(f"Monitor failed with exit code {procs['monitor'].returncode}")
 
     finally:
         for name in ["producer", "monitor", "speed", "batch", "raw"]:

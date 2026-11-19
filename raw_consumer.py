@@ -75,11 +75,10 @@ def main():
                     commit_batch()
                 if not running:
                     break
+            if buffer and (time.monotonic() - last_flush) >= args.flush_interval:
+                commit_batch()
         except Exception as e:
             print(f"[RawConsumer] Error: {e}")
-
-        if buffer and (time.monotonic() - last_flush) >= args.flush_interval:
-            commit_batch()
 
     commit_batch()
 

@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--metrics-out", default="logs/speed_metrics.csv")
     args = parser.parse_args()
 
-    os.makedirs(os.path.dirname(args.metrics_out), exist_ok=True)
+    os.makedirs(os.path.dirname(args.metrics_out) or ".", exist_ok=True)
     if not os.path.exists(args.metrics_out):
         with open(args.metrics_out, "w", encoding="utf-8") as f:
             f.write("timestamp_utc,batch_id,num_records,write_duration_ms,mode\n")
@@ -73,6 +73,14 @@ def main():
         .filter(F.col("event_id").isNotNull())
     )
 
+    pg_conn = None
+
+    def get_pg_conn():
+        nonlocal pg_conn
+        if pg_conn is None or pg_conn.closed:
+            pg_conn = psycopg2.connect(args.pg_conn)
+        return pg_conn
+
     def process_micro_batch(batch_df, batch_id):
         t0 = time.monotonic()
         rows = batch_df.dropDuplicates(["event_id"]).collect()
@@ -80,38 +88,35 @@ def main():
             return
 
         now_utc = datetime.now(timezone.utc)
-        conn = psycopg2.connect(args.pg_conn)
-        try:
-            with conn:
-                with conn.cursor() as cur:
-                    if args.opt:
-                        tuples = [
-                            (r["event_id"], int(r["seq"]), r["category"], int(r["amount_cents"]), r["produced_at"], now_utc)
-                            for r in rows
-                        ]
-                        execute_values(
-                            cur,
+        conn = get_pg_conn()
+        with conn:
+            with conn.cursor() as cur:
+                if args.opt:
+                    tuples = [
+                        (r["event_id"], int(r["seq"]), r["category"], int(r["amount_cents"]), r["produced_at"], now_utc)
+                        for r in rows
+                    ]
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO speed_events (event_id, seq, category, amount_cents, produced_at, visible_at)
+                        VALUES %s
+                        ON CONFLICT (event_id) DO NOTHING
+                        """,
+                        tuples,
+                        page_size=1000
+                    )
+                else:
+                    for r in rows:
+                        cur.execute(
                             """
                             INSERT INTO speed_events (event_id, seq, category, amount_cents, produced_at, visible_at)
-                            VALUES %s
+                            VALUES (%s, %s, %s, %s, %s, %s)
                             ON CONFLICT (event_id) DO NOTHING
                             """,
-                            tuples,
-                            page_size=1000
+                            (r["event_id"], int(r["seq"]), r["category"], int(r["amount_cents"]), r["produced_at"], now_utc)
                         )
-                    else:
-                        for r in rows:
-                            cur.execute(
-                                """
-                                INSERT INTO speed_events (event_id, seq, category, amount_cents, produced_at, visible_at)
-                                VALUES (%s, %s, %s, %s, %s, %s)
-                                ON CONFLICT (event_id) DO NOTHING
-                                """,
-                                (r["event_id"], int(r["seq"]), r["category"], int(r["amount_cents"]), r["produced_at"], now_utc)
-                            )
-                            conn.commit()
-        finally:
-            conn.close()
+                        conn.commit()
 
         dur_ms = (time.monotonic() - t0) * 1000.0
         mode_str = "OPT_BATCH_UPSERT" if args.opt else "BASE_ROW_BY_ROW"
@@ -137,13 +142,17 @@ def main():
     signal.signal(signal.SIGTERM, stop_query)
 
     print(f"[SpeedJob] Streaming started: cores={args.cores}, mem={args.memory}, opt={args.opt}, trigger='{trigger_interval}'")
-    while running and query.isActive:
-        query.awaitTermination(timeout=0.5)
+    try:
+        while running and query.isActive:
+            query.awaitTermination(timeout=0.5)
 
-    if query.isActive:
-        print("[SpeedJob] Stopping streaming query...")
-        query.stop()
-    spark.stop()
+        if query.isActive:
+            print("[SpeedJob] Stopping streaming query...")
+            query.stop()
+    finally:
+        if pg_conn is not None and not pg_conn.closed:
+            pg_conn.close()
+        spark.stop()
     print("[SpeedJob] Stopped cleanly.")
 
 if __name__ == "__main__":

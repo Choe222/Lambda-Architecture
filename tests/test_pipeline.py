@@ -2,10 +2,13 @@ import os
 import json
 import tempfile
 import unittest
+import pandas as pd
 import psycopg2
 
 from batch_job import find_contiguous_watermark
 from monitor import read_new_ground_truth, sample_active_events
+from raw_consumer import flush_buffer
+from run_all_experiments import aggregate_summaries, is_valid_completed_run
 
 
 class TestWatermark(unittest.TestCase):
@@ -29,6 +32,23 @@ class TestWatermark(unittest.TestCase):
             h, files = find_contiguous_watermark(d)
             self.assertEqual(h, 30)
             self.assertEqual(len(files), 3)
+
+    def test_raw_consumer_flush_matches_watermark_parser(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp_dir = os.path.join(d, "tmp")
+            out_dir = os.path.join(d, "out")
+            os.makedirs(tmp_dir)
+            os.makedirs(out_dir)
+
+            batch1 = [
+                {"event_id": "e1", "seq": 1, "event_time": "2024-01-01T00:00:00Z", "produced_at": "2026-01-01T00:00:00+00:00", "category": "ZONE_1", "amount_cents": 100},
+                {"event_id": "e2", "seq": 2, "event_time": "2024-01-01T00:00:01Z", "produced_at": "2026-01-01T00:00:01+00:00", "category": "ZONE_2", "amount_cents": 200},
+            ]
+            flush_buffer(batch1, tmp_dir, out_dir)
+            h, files = find_contiguous_watermark(out_dir)
+            self.assertEqual(h, 2)
+            self.assertEqual(len(files), 1)
+            self.assertEqual(os.listdir(tmp_dir), [])
 
 
 class TestMonitorHelpers(unittest.TestCase):
@@ -102,6 +122,68 @@ class TestServingViews(unittest.TestCase):
         finally:
             conn.rollback()
             conn.close()
+
+
+class TestSuiteAggregation(unittest.TestCase):
+    def _write_summary(self, directory, exp_id, count_diff, sum_diff_cents, is_correct):
+        summary = {
+            "exp_id": exp_id,
+            "freshness_p50_ms": 100.0,
+            "freshness_p95_ms": 200.0,
+            "avg_throughput_eps": 20.0,
+            "max_throughput_eps": 25.0,
+            "avg_backlog": 1.0,
+            "max_backlog": 5,
+            "cpu_avg_percent": 30.0,
+            "cpu_max_percent": 50.0,
+            "ram_avg_mb": 2000.0,
+            "ram_max_mb": 2500.0,
+            "q1_p95_latency_ms": 2.0,
+            "q2_p95_latency_ms": 3.0,
+            "count_diff": count_diff,
+            "sum_diff_cents": sum_diff_cents,
+            "is_correct": is_correct,
+        }
+        with open(os.path.join(directory, f"{exp_id}_summary.json"), "w", encoding="utf-8") as f:
+            json.dump(summary, f)
+
+    def test_aggregate_preserves_opposite_sign_errors_and_batch_avg(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write_summary(d, "E1_A_run1", count_diff=5, sum_diff_cents=100, is_correct=False)
+            self._write_summary(d, "E1_A_run2", count_diff=-5, sum_diff_cents=-100, is_correct=False)
+
+            with open(os.path.join(d, "E1_A_run1_batch_cost.csv"), "w", encoding="utf-8") as f:
+                f.write("batch_duration_ms\n1000\n3000\n")
+            with open(os.path.join(d, "E1_A_run2_batch_cost.csv"), "w", encoding="utf-8") as f:
+                f.write("batch_duration_ms\n4000\n")
+
+            aggregate_summaries(d)
+            df_agg = pd.read_csv(os.path.join(d, "summary_aggregated.csv"))
+            self.assertEqual(len(df_agg), 1)
+            row = df_agg.iloc[0]
+            self.assertEqual(int(row["count_diff"]), 5)
+            self.assertEqual(int(row["sum_diff_cents"]), 100)
+            self.assertFalse(bool(row["is_correct"]))
+            self.assertEqual(float(row["avg_batch_duration_ms"]), 3000.0)
+
+    def test_is_valid_completed_run_rejects_failed_or_unseen(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(is_valid_completed_run(os.path.join(d, "missing.json")))
+
+            bad_correct = os.path.join(d, "bad_correct.json")
+            with open(bad_correct, "w", encoding="utf-8") as f:
+                json.dump({"is_correct": False, "sampled_events_unseen": 0}, f)
+            self.assertFalse(is_valid_completed_run(bad_correct))
+
+            bad_unseen = os.path.join(d, "bad_unseen.json")
+            with open(bad_unseen, "w", encoding="utf-8") as f:
+                json.dump({"is_correct": True, "sampled_events_unseen": 1}, f)
+            self.assertFalse(is_valid_completed_run(bad_unseen))
+
+            good = os.path.join(d, "good.json")
+            with open(good, "w", encoding="utf-8") as f:
+                json.dump({"is_correct": True, "sampled_events_unseen": 0}, f)
+            self.assertTrue(is_valid_completed_run(good))
 
 
 if __name__ == "__main__":
