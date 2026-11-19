@@ -99,6 +99,8 @@ def main():
 
     producer.flush()
     producer.close()
+    with open(f"{args.gt_out}.done", "w", encoding="utf-8") as done_f:
+        done_f.write(str(sent_count))
     total_time = time.monotonic() - start_time
     print(f"[Producer] Finished in {total_time:.2f}s | Sent: {sent_count} | Errors: {error_count}")
 

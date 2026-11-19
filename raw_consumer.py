@@ -56,34 +56,32 @@ def main():
     last_flush = time.monotonic()
     total_archived = 0
 
+    def commit_batch():
+        nonlocal total_archived, last_flush
+        if not buffer:
+            return
+        flush_buffer(buffer, args.tmp_dir, args.out_dir)
+        consumer.commit()
+        total_archived += len(buffer)
+        buffer.clear()
+        last_flush = time.monotonic()
+
     print("[RawConsumer] Started listening for events...")
     while running:
         try:
             for msg in consumer:
                 buffer.append(msg.value)
                 if len(buffer) >= args.max_batch_size or (time.monotonic() - last_flush) >= args.flush_interval:
-                    flush_buffer(buffer, args.tmp_dir, args.out_dir)
-                    consumer.commit()
-                    total_archived += len(buffer)
-                    buffer.clear()
-                    last_flush = time.monotonic()
+                    commit_batch()
                 if not running:
                     break
         except Exception as e:
             print(f"[RawConsumer] Error: {e}")
 
         if buffer and (time.monotonic() - last_flush) >= args.flush_interval:
-            flush_buffer(buffer, args.tmp_dir, args.out_dir)
-            consumer.commit()
-            total_archived += len(buffer)
-            buffer.clear()
-            last_flush = time.monotonic()
+            commit_batch()
 
-    if buffer:
-        flush_buffer(buffer, args.tmp_dir, args.out_dir)
-        consumer.commit()
-        total_archived += len(buffer)
-        buffer.clear()
+    commit_batch()
 
     consumer.close()
     print(f"[RawConsumer] Stopped cleanly. Total archived to Parquet: {total_archived}")

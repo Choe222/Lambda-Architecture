@@ -57,22 +57,24 @@ def run_single_batch(spark, raw_dir, pg_conn_str, last_h, metrics_log_path):
         return last_h
 
     df = spark.read.parquet(*valid_files)
-    df_valid = df.filter(F.col("seq") <= new_h).dropDuplicates(["event_id"])
-
-    agg_rows = (
-        df_valid.groupBy("category")
-        .agg(
-            F.count("*").alias("cnt"),
-            F.coalesce(F.sum("amount_cents"), F.lit(0)).alias("sum_cents")
+    df_valid = df.filter(F.col("seq") <= new_h).dropDuplicates(["event_id"]).cache()
+    try:
+        agg_rows = (
+            df_valid.groupBy("category")
+            .agg(
+                F.count("*").alias("cnt"),
+                F.coalesce(F.sum("amount_cents"), F.lit(0)).alias("sum_cents")
+            )
+            .collect()
         )
-        .collect()
-    )
 
-    new_events = (
-        df_valid.filter(F.col("seq") > last_h)
-        .select("event_id", "seq", "produced_at")
-        .collect()
-    )
+        new_events = (
+            df_valid.filter(F.col("seq") > last_h)
+            .select("event_id", "seq", "produced_at")
+            .collect()
+        )
+    finally:
+        df_valid.unpersist()
 
     now_utc = datetime.now(timezone.utc)
     conn = psycopg2.connect(pg_conn_str)

@@ -127,15 +127,22 @@ def main():
         .start()
     )
 
+    running = True
+
     def stop_query(signum, frame):
-        print("[SpeedJob] Stopping streaming query...")
-        query.stop()
+        nonlocal running
+        running = False
 
     signal.signal(signal.SIGINT, stop_query)
     signal.signal(signal.SIGTERM, stop_query)
 
-    print(f"[SpeedJob] Streaming started: cores={args.cores}, mem={args.memory}, opt={args.opt}, trigger=\x27{trigger_interval}\x27")
-    query.awaitTermination()
+    print(f"[SpeedJob] Streaming started: cores={args.cores}, mem={args.memory}, opt={args.opt}, trigger='{trigger_interval}'")
+    while running and query.isActive:
+        query.awaitTermination(timeout=0.5)
+
+    if query.isActive:
+        print("[SpeedJob] Stopping streaming query...")
+        query.stop()
     spark.stop()
     print("[SpeedJob] Stopped cleanly.")
 
